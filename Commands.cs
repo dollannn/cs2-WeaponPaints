@@ -6,6 +6,7 @@ using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using Newtonsoft.Json.Linq;
+using WeaponPaints.API;
 
 namespace WeaponPaints;
 
@@ -13,20 +14,10 @@ public partial class WeaponPaints
 {
 	private void OnCommandRefresh(CCSPlayerController? player, CommandInfo command)
 	{
-		if (!Config.Additional.CommandWpEnabled || !Config.Additional.SkinEnabled || !_gBCommandsAllowed) return;
+		if (!Config.Additional.CommandWpEnabled || !_gBCommandsAllowed) return;
 		if (!Utility.IsPlayerValid(player)) return;
 
 		if (player == null || !player.IsValid || player.UserId == null || player.IsBot) return;
-
-		PlayerInfo? playerInfo = new PlayerInfo
-		{
-			UserId = player.UserId,
-			Slot = player.Slot,
-			Index = (int)player.Index,
-			SteamId = player?.SteamID.ToString(),
-			Name = player?.PlayerName,
-			IpAddress = player?.IpAddress?.Split(":")[0]
-		};
 
 		try
 		{
@@ -35,21 +26,7 @@ public partial class WeaponPaints
 			{
 				CommandsCooldown[player.Slot] = DateTime.UtcNow.AddSeconds(Config.CmdRefreshCooldownSeconds);
 
-				if (WeaponSync != null)
-				{
-					_ = Task.Run(async () => await WeaponSync.GetPlayerData(playerInfo));
-
-					GivePlayerGloves(player);
-					RefreshWeapons(player);
-					GivePlayerAgent(player);
-					GivePlayerMusicKit(player);
-					AddTimer(0.15f, () => GivePlayerPin(player));
-				}
-
-				if (!string.IsNullOrEmpty(Localizer["wp_command_refresh_done"]))
-				{
-					player.Print(Localizer["wp_command_refresh_done"]);
-				}
+				_ = ReloadPlayerFromCommandAsync(player.SteamID, player.UserId);
 				return;
 			}
 			if (!string.IsNullOrEmpty(Localizer["wp_command_cooldown"]))
@@ -58,6 +35,31 @@ public partial class WeaponPaints
 			}
 		}
 		catch (Exception) { }
+	}
+
+	private async Task ReloadPlayerFromCommandAsync(ulong steamId64, int? userId)
+	{
+		if (LoadoutReloadService == null) return;
+
+		var result = await LoadoutReloadService.ReloadPlayerAsync(steamId64, WeaponPaintsReloadFlags.All);
+
+		Server.NextFrame(() =>
+		{
+			var player = Utilities.GetPlayers().FirstOrDefault(p =>
+				p is { IsValid: true, IsBot: false, UserId: not null } &&
+				p.SteamID == steamId64 &&
+				p.UserId == userId);
+
+			if (!Utility.IsPlayerValid(player)) return;
+
+			if (result.Success && !string.IsNullOrEmpty(Localizer["wp_command_refresh_done"]))
+			{
+				player!.Print(Localizer["wp_command_refresh_done"]);
+				return;
+			}
+
+			player!.Print(result.Message ?? "Failed to refresh weapon paints.");
+		});
 	}
 
 	private void OnCommandWS(CCSPlayerController? player, CommandInfo command)
@@ -156,7 +158,7 @@ public partial class WeaponPaints
 
 	private void OnCommandSkinRefresh(CCSPlayerController? player, CommandInfo command)
 	{
-		if (!Config.Additional.CommandWpEnabled || !Config.Additional.SkinEnabled || !_gBCommandsAllowed) return;
+		if (!Config.Additional.CommandWpEnabled || !_gBCommandsAllowed) return;
 		if (player != null)
 		{
 			return;
@@ -204,37 +206,25 @@ public partial class WeaponPaints
 			Console.WriteLine($"[WeaponPaints] Refreshing skins for {foundPlayer.PlayerName}...");
 		}
 
+		_ = ReloadPlayersFromConsoleAsync(targetPlayers.Select(p => (p.SteamID, p.PlayerName)).ToList());
+	}
+
+	private async Task ReloadPlayersFromConsoleAsync(List<(ulong SteamId64, string PlayerName)> targetPlayers)
+	{
+		if (LoadoutReloadService == null)
+		{
+			Console.WriteLine("[WeaponPaints] Reload service is not ready.");
+			return;
+		}
+
 		foreach (var targetPlayer in targetPlayers)
 		{
 			try
 			{
-				PlayerInfo? playerInfo = new PlayerInfo
-				{
-					UserId = targetPlayer.UserId,
-					Slot = targetPlayer.Slot,
-					Index = (int)targetPlayer.Index,
-					SteamId = targetPlayer.SteamID.ToString(),
-					Name = targetPlayer.PlayerName,
-					IpAddress = targetPlayer.IpAddress?.Split(":")[0]
-				};
-
-				if (WeaponSync != null)
-				{
-					_ = Task.Run(async () => await WeaponSync.GetPlayerData(playerInfo));
-				}
-
-				GivePlayerGloves(targetPlayer);
-				RefreshWeapons(targetPlayer);
-				GivePlayerAgent(targetPlayer);
-				GivePlayerMusicKit(targetPlayer);
-				AddTimer(0.15f, () => GivePlayerPin(targetPlayer));
-
-				if (!string.IsNullOrEmpty(Localizer["wp_command_refresh_done"]))
-				{
-					targetPlayer.Print(Localizer["wp_command_refresh_done"]);
-				}
-
-				Console.WriteLine($"[WeaponPaints] Skins refreshed for {targetPlayer.PlayerName}");
+				var result = await LoadoutReloadService.ReloadPlayerAsync(targetPlayer.SteamId64, WeaponPaintsReloadFlags.All);
+				Console.WriteLine(result.Success
+					? $"[WeaponPaints] Skins refreshed for {targetPlayer.PlayerName}"
+					: $"[WeaponPaints] Failed to refresh skins for {targetPlayer.PlayerName}: {result.Message ?? result.Status.ToString()}");
 			}
 			catch (Exception ex)
 			{
@@ -243,6 +233,55 @@ public partial class WeaponPaints
 		}
 
 		Console.WriteLine("[WeaponPaints] Refresh process completed.");
+	}
+
+	private static Dictionary<CsTeam, Dictionary<int, WeaponInfo>> SnapshotWeaponPaintsForSlot(int slot)
+	{
+		var snapshot = new Dictionary<CsTeam, Dictionary<int, WeaponInfo>>();
+
+		if (!GPlayerWeaponsInfo.TryGetValue(slot, out var teamWeaponInfos))
+			return snapshot;
+
+		foreach (var (team, weapons) in teamWeaponInfos)
+		{
+			snapshot[team] = weapons.ToDictionary(weapon => weapon.Key, weapon => CloneWeaponInfo(weapon.Value));
+		}
+
+		return snapshot;
+	}
+
+	private static WeaponInfo CloneWeaponInfo(WeaponInfo source)
+	{
+		return new WeaponInfo
+		{
+			Paint = source.Paint,
+			Seed = source.Seed,
+			Wear = source.Wear,
+			Nametag = source.Nametag,
+			StatTrak = source.StatTrak,
+			StatTrakCount = source.StatTrakCount,
+			KeyChain = source.KeyChain == null
+				? null
+				: new KeyChainInfo
+				{
+					Id = source.KeyChain.Id,
+					OffsetX = source.KeyChain.OffsetX,
+					OffsetY = source.KeyChain.OffsetY,
+					OffsetZ = source.KeyChain.OffsetZ,
+					Seed = source.KeyChain.Seed
+				},
+			Stickers = source.Stickers.Select(sticker => new StickerInfo
+			{
+				Slot = sticker.Slot,
+				Id = sticker.Id,
+				Schema = sticker.Schema,
+				OffsetX = sticker.OffsetX,
+				OffsetY = sticker.OffsetY,
+				Wear = sticker.Wear,
+				Scale = sticker.Scale,
+				Rotation = sticker.Rotation
+			}).ToList()
+		};
 	}
 
 
@@ -319,7 +358,20 @@ public partial class WeaponPaints
 				RefreshWeapons(player);
 
 			if (WeaponSync != null)
-				_ = Task.Run(async () => await WeaponSync.SyncKnifeToDatabase(playerInfo, knifeKey, teamsToCheck));
+			{
+				var knifeSync = WeaponSync;
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						await knifeSync.SyncKnifeToDatabase(playerInfo, knifeKey, teamsToCheck);
+					}
+					catch (Exception ex)
+					{
+						Utility.Log($"Error syncing knife to database: {ex.Message}");
+					}
+				});
+			}
 		};
 		foreach (var knifePair in knivesOnly)
 		{
@@ -441,18 +493,24 @@ public partial class WeaponPaints
 						IpAddress = p.IpAddress?.Split(":")[0]
 					};
 
-					if (!_gBCommandsAllowed || (LifeState_t)p.LifeState != LifeState_t.LIFE_ALIVE ||
-					    WeaponSync == null) return;
-					RefreshWeapons(player);
+					if (WeaponSync == null) return;
 
-					try
+					if (_gBCommandsAllowed && (LifeState_t)p.LifeState == LifeState_t.LIFE_ALIVE)
+						RefreshWeapons(p);
+
+					var weaponSync = WeaponSync;
+					var weaponSnapshot = SnapshotWeaponPaintsForSlot(p.Slot);
+					_ = Task.Run(async () =>
 					{
-						_ = Task.Run(async () => await WeaponSync.SyncWeaponPaintsToDatabase(playerInfo));
-					}
-					catch (Exception ex)
-					{
-						Utility.Log($"Error syncing weapon paints: {ex.Message}");
-					}
+						try
+						{
+							await weaponSync.SyncWeaponPaintsToDatabase(playerInfo, weaponSnapshot);
+						}
+						catch (Exception ex)
+						{
+							Utility.Log($"Error syncing weapon paints: {ex.Message}");
+						}
+					});
 				}
 			};
 
@@ -572,15 +630,11 @@ public partial class WeaponPaints
 					// Update the glove for the player in the specified team
 					playerGloves[team] = (ushort)weaponDefindex;
 
-					// Check if the glove information already exists for the player
-					if (!GPlayerWeaponsInfo[player.Slot][team].ContainsKey(weaponDefindex))
-					{
-						WeaponInfo weaponInfo = new()
-						{
-							Paint = paint
-						};
-						GPlayerWeaponsInfo[player.Slot][team][weaponDefindex] = weaponInfo;
-					}
+					var weaponInfo = GPlayerWeaponsInfo[player.Slot][team]
+						.GetOrAdd(weaponDefindex, _ => new WeaponInfo());
+					weaponInfo.Paint = paint;
+					weaponInfo.Wear = 0.00f;
+					weaponInfo.Seed = 0;
 				}
 			}
 			else
@@ -590,27 +644,18 @@ public partial class WeaponPaints
 
 			if (WeaponSync == null) return;
 
+			var gloveSync = WeaponSync;
+			var gloveWeaponSnapshot = SnapshotWeaponPaintsForSlot(player.Slot);
 			_ = Task.Run(async () =>
 			{
-				// Sync glove to database for all teams
-				foreach (var team in teamsToCheck)
+				try
 				{
-					await WeaponSync.SyncGloveToDatabase(playerInfo, (ushort)weaponDefindex, teamsToCheck);
-        
-					// Check if the weapon info exists for the glove
-					if (!GPlayerWeaponsInfo[playerInfo.Slot][team].TryGetValue(weaponDefindex, out var value))
-					{
-						value = new WeaponInfo();
-						GPlayerWeaponsInfo[playerInfo.Slot][team][weaponDefindex] = value;
-					}
-
-					// Update weapon info
-					value.Paint = paint;
-					value.Wear = 0.00f;
-					value.Seed = 0;
-
-					// Sync weapon paints to database
-					await WeaponSync.SyncWeaponPaintsToDatabase(playerInfo);
+					await gloveSync.SyncGloveToDatabase(playerInfo, (ushort)weaponDefindex, teamsToCheck);
+					await gloveSync.SyncWeaponPaintsToDatabase(playerInfo, gloveWeaponSnapshot);
+				}
+				catch (Exception ex)
+				{
+					Utility.Log($"Error syncing glove to database: {ex.Message}");
 				}
 			});
 				
@@ -704,9 +749,21 @@ public partial class WeaponPaints
 
 				if (WeaponSync != null)
 				{
+					var agentSync = WeaponSync;
+					var agents = GPlayersAgent.TryGetValue(player.Slot, out var currentAgents)
+						? currentAgents
+						: (CT: (string?)null, T: (string?)null);
+
 					_ = Task.Run(async () =>
 					{
-						await WeaponSync.SyncAgentToDatabase(playerInfo);
+						try
+						{
+							await agentSync.SyncAgentToDatabase(playerInfo, agents.CT, agents.T);
+						}
+						catch (Exception ex)
+						{
+							Utility.Log($"Error syncing agents to database: {ex.Message}");
+						}
 					});
 				}
 			};

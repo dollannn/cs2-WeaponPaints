@@ -169,7 +169,7 @@ namespace WeaponPaints
 
 			foreach (var sticker in weaponInfo.Stickers)
 			{
-				int stickerSlot = weaponInfo.Stickers.IndexOf(sticker);
+				int stickerSlot = Math.Clamp(sticker.Slot, 0, 4);
 
 				CAttributeListSetOrAddAttributeValueByName.Invoke(weapon.AttributeManager.Item.NetworkedDynamicAttributes.Handle,
 					$"sticker slot {stickerSlot} id", ViewAsFloat(sticker.Id));
@@ -503,10 +503,15 @@ namespace WeaponPaints
 		private static void GivePlayerMusicKit(CCSPlayerController player)
 		{
 			if (player.IsBot) return;
-			if (!GPlayersMusic.TryGetValue(player.Slot, out var musicInfo) ||
-			    !musicInfo.TryGetValue(player.Team, out var musicId) || musicId == 0) return;
 			
 			if (player.InventoryServices == null) return;
+
+			ushort musicId = 0;
+			if (GPlayersMusic.TryGetValue(player.Slot, out var musicInfo) &&
+			    musicInfo.TryGetValue(player.Team, out var selectedMusicId))
+			{
+				musicId = selectedMusicId;
+			}
 
 			player.MusicKitID = musicId;
 			// player.MvpNoMusic = false;
@@ -520,9 +525,14 @@ namespace WeaponPaints
 
 		private static void GivePlayerPin(CCSPlayerController player)
 		{
-			if (!GPlayersPin.TryGetValue(player.Slot, out var pinInfo) ||
-			    !pinInfo.TryGetValue(player.Team, out var pinId)) return;
 			if (player.InventoryServices == null) return;
+
+			ushort pinId = 0;
+			if (GPlayersPin.TryGetValue(player.Slot, out var pinInfo) &&
+			    pinInfo.TryGetValue(player.Team, out var selectedPinId))
+			{
+				pinId = selectedPinId;
+			}
 			
 			player.InventoryServices.Rank[5] = pinId > 0 ? (MedalRank_t)pinId : MedalRank_t.MEDAL_RANK_NONE;
 			Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInventoryServices");

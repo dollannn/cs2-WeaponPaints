@@ -7,6 +7,7 @@ using CounterStrikeSharp.API.Modules.Utils;
 using MenuManager;
 using Microsoft.Extensions.Localization;
 using Newtonsoft.Json.Linq;
+using WeaponPaints.Services;
 
 namespace WeaponPaints;
 
@@ -90,6 +91,7 @@ public partial class WeaponPaints
 
 	private static readonly Dictionary<int, DateTime> CommandsCooldown = new();
 	internal static Database? Database;
+	internal Task DatabaseReadyTask { get; private set; } = Task.CompletedTask;
 
 	private static readonly MemoryFunctionVoid<nint, string, float> CAttributeListSetOrAddAttributeValueByName = new(GameData.GetSignature("CAttributeList_SetOrAddAttributeValueByName"));
 	
@@ -166,6 +168,8 @@ public partial class WeaponPaints
 	
 	internal static IMenuApi? MenuApi;
 	private static readonly PluginCapability<IMenuApi> MenuCapability = new("menu:nfcore");
+	internal PlayerLoadoutCache LoadoutCache { get; } = new();
+	internal LoadoutReloadService? LoadoutReloadService { get; private set; }
 	
 	private int _fadeSeed;
 

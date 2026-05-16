@@ -4,7 +4,9 @@ using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
+using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
+using WeaponPaints.API;
 
 namespace WeaponPaints
 {
@@ -20,19 +22,10 @@ namespace WeaponPaints
 			if (player is null || !player.IsValid || player.IsBot ||
 				WeaponSync == null || Database == null) return HookResult.Continue;
 
-			var playerInfo = new PlayerInfo
-			{
-				UserId = player.UserId,
-				Slot = player.Slot,
-				Index = (int)player.Index,
-				SteamId = player.SteamID.ToString(),
-				Name = player.PlayerName,
-				IpAddress = player.IpAddress?.Split(":")[0]
-			};
-
 			try
 			{
-				_ = Task.Run(async () => await WeaponSync.GetPlayerData(playerInfo));
+				LoadoutReloadService?.RegisterOnlinePlayer(player);
+				_ = LoadoutReloadService?.ReloadPlayerAsync(player.SteamID, WeaponPaintsReloadFlags.All);
 				/*
 				if (Config.Additional.SkinEnabled)
 				{
@@ -70,63 +63,66 @@ namespace WeaponPaints
 		{
 			CCSPlayerController? player = @event.Userid;
 
-			if (player is null || !player.IsValid || player.IsBot) return HookResult.Continue;
+			if (player is null || player.IsBot) return HookResult.Continue;
+
+			ulong steamId;
+			int slot;
+			int? userId;
+
+			try
+			{
+				steamId = player.SteamID;
+				slot = player.Slot;
+				userId = player.UserId;
+			}
+			catch (Exception ex)
+			{
+				Utility.Log($"Unable to read disconnecting player identity: {ex.Message}");
+				return HookResult.Continue;
+			}
+
+			var statTrakSnapshot = CaptureStatTrakSnapshot(slot);
+
+			LoadoutReloadService?.UnregisterOnlinePlayer(steamId, slot, userId);
+			_temporaryPlayerWeaponWear.TryRemove(slot, out _);
+			CommandsCooldown.Remove(slot);
+			Players.Remove(player);
+
+			if (!player.IsValid) return HookResult.Continue;
 
 			var playerInfo = new PlayerInfo
 			{
-				UserId = player.UserId,
-				Slot = player.Slot,
+				UserId = userId,
+				Slot = slot,
 				Index = (int)player.Index,
-				SteamId = player.SteamID.ToString(),
+				SteamId = steamId.ToString(),
 				Name = player.PlayerName,
 				IpAddress = player.IpAddress?.Split(":")[0]
 			};
 
+			var weaponSync = WeaponSync;
 			Task.Run(async () => 
 			{
-				if (WeaponSync != null)
-					await WeaponSync.SyncStatTrakToDatabase(playerInfo);
-
-				if (Config.Additional.SkinEnabled)
+				try
 				{
-					GPlayerWeaponsInfo.TryRemove(player.Slot, out _);
+					if (weaponSync != null)
+						await weaponSync.SyncStatTrakToDatabase(playerInfo, statTrakSnapshot);
+				}
+				catch (Exception ex)
+				{
+					Utility.Log($"Error syncing stattrak on disconnect: {ex.Message}");
 				}
 			});
-
-			if (Config.Additional.KnifeEnabled)
-			{
-				GPlayersKnife.TryRemove(player.Slot, out _);
-			}
-			if (Config.Additional.GloveEnabled)
-			{
-				GPlayersGlove.TryRemove(player.Slot, out _);
-			}
-			if (Config.Additional.AgentEnabled)
-			{
-				GPlayersAgent.TryRemove(player.Slot, out _);
-			}
-			if (Config.Additional.MusicEnabled)
-			{
-				GPlayersMusic.TryRemove(player.Slot, out _);
-			}
-			if (Config.Additional.PinsEnabled)
-			{
-				GPlayersPin.TryRemove(player.Slot, out _);
-			}
-			
-			_temporaryPlayerWeaponWear.TryRemove(player.Slot, out _);
-			CommandsCooldown.Remove(player.Slot);
-			Players.Remove(player);
 
 			return HookResult.Continue;
 		}
 
 		private void OnMapStart(string mapName)
 		{
-			if (Config.Additional is { KnifeEnabled: false, SkinEnabled: false, GloveEnabled: false }) return;
-			
 			if (Database != null)
 				WeaponSync = new WeaponSynchronization(Database, Config);
+
+			LoadoutReloadService?.InvalidateActiveReloads();
 
 			_fadeSeed = 0;
 			_nextItemId = MinimumCustomItemId;
@@ -136,7 +132,15 @@ namespace WeaponPaints
 		{
 			CCSPlayerController? player = @event.Userid;
 
-			if (player is null || !player.IsValid || Config.Additional is { KnifeEnabled: false, GloveEnabled: false })
+			if (player is null || !player.IsValid || Config.Additional is
+			    {
+				    KnifeEnabled: false,
+				    SkinEnabled: false,
+				    GloveEnabled: false,
+				    AgentEnabled: false,
+				    MusicEnabled: false,
+				    PinsEnabled: false
+			    })
 				return HookResult.Continue;
 
 			CCSPlayerPawn? pawn = player.PlayerPawn.Value;
@@ -330,6 +334,28 @@ namespace WeaponPaints
 			CAttributeListSetOrAddAttributeValueByName.Invoke(weapon.AttributeManager.Item.AttributeList.Handle, "kill eater score type", 0);
 
 			return HookResult.Continue;
+		}
+
+		private static Dictionary<CsTeam, Dictionary<int, (bool StatTrak, int StatTrakCount)>> CaptureStatTrakSnapshot(int slot)
+		{
+			var snapshot = new Dictionary<CsTeam, Dictionary<int, (bool StatTrak, int StatTrakCount)>>();
+
+			if (!GPlayerWeaponsInfo.TryGetValue(slot, out var teamWeaponsInfo))
+				return snapshot;
+
+			foreach (var (team, weapons) in teamWeaponsInfo)
+			{
+				var weaponSnapshot = new Dictionary<int, (bool StatTrak, int StatTrakCount)>();
+
+				foreach (var (weaponDefIndex, weaponInfo) in weapons)
+				{
+					weaponSnapshot[weaponDefIndex] = (weaponInfo.StatTrak, weaponInfo.StatTrakCount);
+				}
+
+				snapshot[team] = weaponSnapshot;
+			}
+
+			return snapshot;
 		}
 
 		private void RegisterListeners()

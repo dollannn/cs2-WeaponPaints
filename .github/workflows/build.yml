@@ -35,6 +35,8 @@ jobs:
       run: dotnet restore
     - name: Build
       run: dotnet build ${{ env.PROJECT_PATH }} -c WeaponPaints -o ${{ env.OUTPUT_PATH }}
+    - name: Build shared API
+      run: dotnet build WeaponPaints.API/WeaponPaints.API.csproj -c WeaponPaints -o shared/WeaponPaints.API
 
   publish:
     if: github.event_name == 'push'
@@ -51,6 +53,8 @@ jobs:
       run: dotnet restore
     - name: Build
       run: dotnet build ${{ env.PROJECT_PATH }} -c WeaponPaints -o ${{ env.OUTPUT_PATH }}
+    - name: Build shared API
+      run: dotnet build WeaponPaints.API/WeaponPaints.API.csproj -c WeaponPaints -o shared/WeaponPaints.API
     - name: Clean files
       run: |
         rm -f \
@@ -58,10 +62,12 @@ jobs:
           ${{ env.OUTPUT_PATH }}/McMaster.NETCore.Plugins.dll \
           ${{ env.OUTPUT_PATH }}/Microsoft.DotNet.PlatformAbstractions.dll \
           ${{ env.OUTPUT_PATH }}/Microsoft.Extensions.DependencyModel.dll \
+          ${{ env.OUTPUT_PATH }}/WeaponPaints.API.dll \
+          shared/WeaponPaints.API/CounterStrikeSharp.API.dll
     - name: Copy skins
       run: cp -R website/data ${{ env.OUTPUT_PATH }}
     - name: Zip
-      run: zip -r "${{ env.PROJECT_NAME }}.zip" "${{ env.OUTPUT_PATH }}" gamedata/
+      run: zip -r "${{ env.PROJECT_NAME }}.zip" "${{ env.OUTPUT_PATH }}" gamedata/ shared/
     - name: Clean files Website
       run: |
         rm -rf website/img/
@@ -78,4 +84,5 @@ jobs:
         name: "Build ${{ env.BUILD_NUMBER }}"
         tag: "build-${{ env.BUILD_NUMBER }}"
         body: |
-          Place the plugin in game/csgo/addons/counterstrikesharp/plugins/WeaponPaints
+          Place the WeaponPaints folder in game/csgo/addons/counterstrikesharp/plugins/WeaponPaints
+          Place shared/WeaponPaints.API/WeaponPaints.API.dll in game/csgo/addons/counterstrikesharp/shared/WeaponPaints.API/WeaponPaints.API.dll

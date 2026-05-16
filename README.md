@@ -12,6 +12,7 @@ Unfinished, unoptimized and not fully functional ugly demo weapon paints plugin 
 - Changes only paint, seed and wear on weapons, knives, gloves and agents
 - MySQL based
 - Data syncs on player connect
+- Shared API capability for other CounterStrikeSharp plugins to reload online player loadouts in real time
 - Added command **`!wp`** to refresh skins ***(with cooldown in seconds can be configured)***
 - Added command **`!ws`** to show website
 - Added command **`!knife`** to show menu with knives
@@ -32,6 +33,7 @@ Unfinished, unoptimized and not fully functional ugly demo weapon paints plugin 
 ## CS2 Server
 - Have working CounterStrikeSharp (**with RUNTIME!**)
 - Download from Release and copy plugin to plugins
+- Copy `shared/WeaponPaints.API/WeaponPaints.API.dll` from the release to `addons/counterstrikesharp/shared/WeaponPaints.API/WeaponPaints.API.dll`
 - Run server with plugin, **it will generate config if installed correctly!**
 - Edit `addons/counterstrikesharp/configs/`**`plugins/WeaponPaints/WeaponPaints.json`** include database credentials
 - In `addons/counterstrikesharp/configs/`**`core.json`** set **FollowCS2ServerGuidelines** to **`false`**
@@ -91,6 +93,43 @@ Unfinished, unoptimized and not fully functional ugly demo weapon paints plugin 
 - Basic website
 - Steam login/logout
 - Change knife, paint, seed and wear
+
+## Shared API for other plugins
+
+WeaponPaints exposes a CounterStrikeSharp plugin capability so other plugins can trigger a live reload after your website/configurator changes a player's loadout.
+
+Reference `WeaponPaints.API.dll` from your plugin and place the same contract DLL in CounterStrikeSharp's shared folder, e.g. `addons/counterstrikesharp/shared/WeaponPaints.API/WeaponPaints.API.dll`, so every plugin resolves the same API type identity. Do not copy `WeaponPaints.API.dll` into your plugin output folder.
+
+Recommended consumer reference:
+
+```xml
+<Reference Include="WeaponPaints.API">
+  <HintPath>path/to/WeaponPaints.API.dll</HintPath>
+  <Private>false</Private>
+</Reference>
+```
+
+Then resolve:
+
+```csharp
+using WeaponPaints.API;
+
+var weaponPaints = WeaponPaintsCapabilities.TryGet();
+if (weaponPaints != null)
+{
+    var result = await weaponPaints.ReloadPlayerAsync(steamId64, WeaponPaintsReloadFlags.All);
+}
+```
+
+Use narrower flags when only one part changed:
+
+```csharp
+await weaponPaints.ReloadPlayerAsync(
+    steamId64,
+    WeaponPaintsReloadFlags.Weapons | WeaponPaintsReloadFlags.Knife);
+```
+
+Capability name: `weaponpaints:api`.
 
 ## Troubleshooting
 <details>

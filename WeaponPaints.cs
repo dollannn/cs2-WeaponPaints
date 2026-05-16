@@ -3,10 +3,13 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
+using CounterStrikeSharp.API.Core.Capabilities;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Entities.Constants;
 using Microsoft.Extensions.Logging;
 using MySqlConnector;
+using WeaponPaints.API;
+using WeaponPaints.Services;
 
 namespace WeaponPaints;
 
@@ -31,38 +34,23 @@ public partial class WeaponPaints : BasePlugin, IPluginConfig<WeaponPaintsConfig
 		//	Patch.PerformPatch("74 ? 48 8D 0D ? ? ? ? FF 15 ? ? ? ? EB ? BA", "EB");
 		
 		Instance = this;
+		LoadoutReloadService ??= new LoadoutReloadService(this, LoadoutCache);
+		WeaponPaintsApiProvider.SetCurrent(new WeaponPaintsApi(LoadoutReloadService));
+		Capabilities.RegisterPluginCapability(WeaponPaintsCapabilities.Capability, () => WeaponPaintsApiProvider.Api);
 
 		if (hotReload)
 		{
 			OnMapStart(string.Empty);
-			
-			GPlayerWeaponsInfo.Clear();
-			GPlayersKnife.Clear();
-			GPlayersGlove.Clear();
-			GPlayersAgent.Clear();
-			GPlayersPin.Clear();
-			GPlayersMusic.Clear();
+			LoadoutCache.Clear();
 
 			foreach (var player in Enumerable
-				         .OfType<CCSPlayerController>(Utilities.GetPlayers().TakeWhile(_ => WeaponSync != null))
-				         .Where(player => player.IsValid &&
-					         !string.IsNullOrEmpty(player.IpAddress) && player is
+					         .OfType<CCSPlayerController>(Utilities.GetPlayers().TakeWhile(_ => LoadoutReloadService != null))
+					         .Where(player => player.IsValid &&
+						         !string.IsNullOrEmpty(player.IpAddress) && player is
 						         { IsBot: false, Connected: PlayerConnectedState.Connected }))
 			{
-				var playerInfo = new PlayerInfo
-				{
-					UserId = player.UserId,
-					Slot = player.Slot,
-					Index = (int)player.Index,
-					SteamId = player?.SteamID.ToString(),
-					Name = player?.PlayerName,
-					IpAddress = player?.IpAddress?.Split(":")[0]
-				};
-
-				_ = Task.Run(async () =>
-				{
-					if (WeaponSync != null) await WeaponSync.GetPlayerData(playerInfo);
-				});
+				LoadoutReloadService!.RegisterOnlinePlayer(player);
+				_ = LoadoutReloadService.ReloadPlayerAsync(player.SteamID, WeaponPaintsReloadFlags.All);
 			}
 		}
 
@@ -106,8 +94,9 @@ public partial class WeaponPaints : BasePlugin, IPluginConfig<WeaponPaintsConfig
 		};
 
 		Database = new Database(builder.ConnectionString);
+		WeaponSync = new WeaponSynchronization(Database, Config);
 
-		_ = Utility.CheckDatabaseTables();
+		DatabaseReadyTask = Utility.CheckDatabaseTables();
 		_localizer = Localizer;
 
 		Utility.Config = config;
@@ -142,5 +131,13 @@ public partial class WeaponPaints : BasePlugin, IPluginConfig<WeaponPaintsConfig
 			Logger.LogError("Error while loading required plugins");
 			throw;
 		}
+	}
+
+	public override void Unload(bool hotReload)
+	{
+		LoadoutReloadService?.InvalidateActiveReloads();
+		LoadoutCache.Clear();
+		WeaponPaintsApiProvider.SetCurrent(null);
+		base.Unload(hotReload);
 	}
 }

@@ -16,6 +16,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="WeaponPaints.API\**\*.cs" />
+    <ProjectReference Include="WeaponPaints.API\WeaponPaints.API.csproj" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="lang\**\*.*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
